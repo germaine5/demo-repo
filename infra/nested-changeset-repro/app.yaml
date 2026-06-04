@@ -1,0 +1,55 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  App stack - receives SSM parameter names as plain strings and
+  passes them to leaf stacks that use AWS::SSM::Parameter::Value
+  for dynamic resolution.
+
+Parameters:
+  InfraS3Bucket:
+    Type: String
+  BuildName:
+    Type: String
+  BuildId:
+    Type: String
+  Environment:
+    Type: String
+  ScalableTargetRoleArnSsm:
+    Description: SSM parameter name for the scalable target role ARN
+    Type: String
+  PrivateHostedZoneId:
+    Description: SSM parameter name for private hosted zone ID
+    Type: String
+  PrivateHostedZoneName:
+    Description: SSM parameter name for private hosted zone name
+    Type: String
+
+Resources:
+  # -----------------------------------------------------------
+  # AuroraDatabase nested stack
+  # Uses AWS::SSM::Parameter::Value<String> to resolve the param
+  # -----------------------------------------------------------
+  AuroraDatabase:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub "${InfraS3Bucket}/modules/rds/aurora-template.yaml"
+      Parameters:
+        Environment: !Ref Environment
+        ScalableTargetRoleArnSsm: !Ref ScalableTargetRoleArnSsm
+
+  # -----------------------------------------------------------
+  # DNS Records nested stack
+  # -----------------------------------------------------------
+  DnsRecords:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub "${InfraS3Bucket}/modules/dns/dns-records.yaml"
+      Parameters:
+        Environment: !Ref Environment
+        PrivateHostedZoneId: !Ref PrivateHostedZoneId
+        PrivateHostedZoneName: !Ref PrivateHostedZoneName
+
+Outputs:
+  AuroraDatabaseStackId:
+    Value: !Ref AuroraDatabase
+  DnsRecordsStackId:
+    Value: !Ref DnsRecords

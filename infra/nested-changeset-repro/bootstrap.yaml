@@ -1,0 +1,55 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Bootstrap stack - pre-creates the SSM parameters that the nested
+  stacks will reference. This simulates the customer's environment
+  where these parameters already exist from a previous deployment.
+  
+  Deploy this FIRST, then deploy the parent stack.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+
+Resources:
+  ScalableTargetRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Environment}-ecs-scalable-target-role-bootstrap"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: application-autoscaling.amazonaws.com
+            Action: sts:AssumeRole
+
+  ScalableTargetRoleArnParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/dx/infra/${Environment}-common/service-scheduler-role-arn"
+      Type: String
+      Value: !GetAtt ScalableTargetRole.Arn
+      Description: Pre-seeded scalable target role ARN
+
+  PrivateHostedZoneIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/dx/infra/${Environment}-common/private-hosted-zone-id"
+      Type: String
+      Value: "Z0123456789EXAMPLE"
+      Description: Pre-seeded private hosted zone ID
+
+  PrivateHostedZoneNameParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/dx/infra/${Environment}-common/private-hosted-zone-name"
+      Type: String
+      Value: "internal.example.com"
+      Description: Pre-seeded private hosted zone name
+
+Outputs:
+  ScalableTargetRoleArn:
+    Value: !GetAtt ScalableTargetRole.Arn
+  SsmParamPath:
+    Value: !Sub "/dx/infra/${Environment}-common/service-scheduler-role-arn"

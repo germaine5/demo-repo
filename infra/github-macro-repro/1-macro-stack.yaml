@@ -1,0 +1,194 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Deploys the GitHubInclude Lambda macro.
+  Deploy this FIRST - it registers the macro so other templates can use it.
+
+Parameters:
+  GitHubToken:
+    Type: String
+    NoEcho: true
+    Description: >
+      GitHub Personal Access Token with repo read access.
+      For a public repo you can leave this empty.
+      Store as a SecureString in SSM before deploying:
+        aws ssm put-parameter --name /cfn/macro/github-token \
+          --value "ghp_xxxx" --type SecureString
+
+Resources:
+  # -----------------------------------------------------------
+  # Store the GitHub token in Secrets Manager so the Lambda
+  # can retrieve it at runtime without it appearing in template
+  # -----------------------------------------------------------
+  GitHubTokenSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: /cfn/macro/github-token
+      Description: GitHub PAT used by the GitHubInclude CFN macro
+      SecretString: !Ref GitHubToken
+
+  # -----------------------------------------------------------
+  # IAM Role for the macro Lambda
+  # -----------------------------------------------------------
+  MacroLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: GitHubIncludeMacroRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ReadGitHubTokenSecret
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref GitHubTokenSecret
+
+  # -----------------------------------------------------------
+  # Lambda function - the macro handler
+  # -----------------------------------------------------------
+  MacroLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: GitHubIncludeMacro
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt MacroLambdaRole.Arn
+      Timeout: 30
+      Environment:
+        Variables:
+          SECRET_ARN: !Ref GitHubTokenSecret
+      Code:
+        ZipFile: |
+          import json
+          import urllib.request
+          import urllib.error
+          import boto3
+          import os
+          import yaml   # available in Lambda Python 3.12 runtime
+
+          def get_github_token():
+              """Retrieve GitHub PAT from Secrets Manager."""
+              client = boto3.client("secretsmanager")
+              secret = client.get_secret_value(SecretId=os.environ["SECRET_ARN"])
+              return secret["SecretString"]
+
+          def fetch_github_file(owner, repo, path, ref, token):
+              """
+              Fetch raw file content from GitHub using the Contents API.
+              Works for both public (token optional) and private repos.
+              """
+              url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}?ref={ref}"
+              headers = {
+                  "Accept": "application/vnd.github.v3.raw",
+                  "User-Agent": "CFN-GitHubInclude-Macro",
+              }
+              if token:
+                  headers["Authorization"] = f"token {token}"
+
+              req = urllib.request.Request(url, headers=headers)
+              with urllib.request.urlopen(req) as resp:
+                  return resp.read().decode("utf-8")
+
+          def process_fragment(fragment, token):
+              """
+              Recursively walk the template fragment looking for
+              GitHubInclude transform invocations:
+
+                Fn::Transform:
+                  Name: GitHubInclude
+                  Parameters:
+                    Owner: my-org
+                    Repo:  my-repo
+                    Path:  snippets/s3-bucket.yaml
+                    Ref:   main          # optional, defaults to main
+
+              When found, fetch the file from GitHub, parse it as YAML,
+              and replace the Fn::Transform node with the parsed content.
+              """
+              if isinstance(fragment, dict):
+                  # Check if this node is a GitHubInclude transform call
+                  if (
+                      "Fn::Transform" in fragment
+                      and isinstance(fragment["Fn::Transform"], dict)
+                      and fragment["Fn::Transform"].get("Name") == "GitHubInclude"
+                  ):
+                      params = fragment["Fn::Transform"].get("Parameters", {})
+                      owner  = params["Owner"]
+                      repo   = params["Repo"]
+                      path   = params["Path"]
+                      ref    = params.get("Ref", "main")
+
+                      raw = fetch_github_file(owner, repo, path, ref, token)
+                      return yaml.safe_load(raw)
+
+                  # Recurse into all dict values
+                  return {k: process_fragment(v, token) for k, v in fragment.items()}
+
+              if isinstance(fragment, list):
+                  return [process_fragment(item, token) for item in fragment]
+
+              return fragment
+
+          def handler(event, context):
+              """
+              CloudFormation macro handler.
+              Receives the full template fragment and returns the processed version.
+              """
+              print("Received event:", json.dumps(event))
+
+              try:
+                  token    = get_github_token()
+                  fragment = event["fragment"]
+                  processed = process_fragment(fragment, token)
+
+                  return {
+                      "requestId": event["requestId"],
+                      "status":    "success",
+                      "fragment":  processed,
+                  }
+
+              except Exception as e:
+                  print(f"Macro error: {e}")
+                  return {
+                      "requestId": event["requestId"],
+                      "status":    "failure",
+                      "errorMessage": str(e),
+                  }
+
+  # -----------------------------------------------------------
+  # Permission for CloudFormation to invoke the Lambda
+  # -----------------------------------------------------------
+  MacroLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt MacroLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: cloudformation.amazonaws.com
+
+  # -----------------------------------------------------------
+  # Register the macro with CloudFormation
+  # -----------------------------------------------------------
+  GitHubIncludeMacro:
+    Type: AWS::CloudFormation::Macro
+    Properties:
+      Name: GitHubInclude
+      Description: Fetches a YAML snippet from a GitHub repo and injects it into the template
+      FunctionName: !GetAtt MacroLambda.Arn
+
+Outputs:
+  MacroName:
+    Value: GitHubInclude
+    Description: Use this macro name in your templates
+  MacroLambdaArn:
+    Value: !GetAtt MacroLambda.Arn
+  GitHubTokenSecretArn:
+    Value: !Ref GitHubTokenSecret

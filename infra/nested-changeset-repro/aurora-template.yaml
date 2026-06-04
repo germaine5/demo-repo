@@ -1,0 +1,30 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Leaf-level nested stack that uses AWS::SSM::Parameter::Value<String>
+  to resolve the scalable target role ARN from Parameter Store.
+
+Parameters:
+  Environment:
+    Type: String
+  ScalableTargetRoleArnSsm:
+    Description: >
+      SSM parameter name (path) holding the scalable target role ARN.
+      Now a plain String - resolution happens via {{resolve:ssm:...}}
+      at deploy time, NOT during change set evaluation.
+    Type: String
+
+Resources:
+  # Use the dynamic reference only in resource properties
+  ResolvedRoleArnParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/dx/infra/${Environment}-common/aurora-resolved-role-arn"
+      Type: String
+      Value: !Sub "{{resolve:ssm:${ScalableTargetRoleArnSsm}}}"
+      Description: Proves the SSM dynamic reference resolved successfully
+
+Outputs:
+  # Output the SSM path (not the resolved value)
+  ScalableTargetRoleArnSsmPath:
+    Description: The SSM parameter path that was passed in
+    Value: !Ref ScalableTargetRoleArnSsm

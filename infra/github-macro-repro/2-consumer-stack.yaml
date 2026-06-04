@@ -1,0 +1,59 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Consumer template that uses the GitHubInclude macro to pull
+  a reusable snippet from a GitHub repository and inject it
+  into the Resources section at change set creation time.
+
+# Declare the macro at the top level so CloudFormation
+# runs it over the entire template before deployment.
+Transform: GitHubInclude
+
+Parameters:
+  GitHubOwner:
+    Type: String
+    Description: GitHub username or org (e.g. "my-org")
+  GitHubRepo:
+    Type: String
+    Description: GitHub repository name (e.g. "my-infra-snippets")
+  GitHubRef:
+    Type: String
+    Default: main
+    Description: Branch, tag or commit SHA to fetch from
+
+Resources:
+  # -----------------------------------------------------------
+  # Regular resource defined directly in this template
+  # -----------------------------------------------------------
+  AppBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-app-data"
+      LoggingConfiguration:
+        DestinationBucketName: !Ref LoggingBucket  # injected by macro below
+        LogFilePrefix: app-data/
+
+  # -----------------------------------------------------------
+  # GitHubInclude macro invocation
+  #
+  # At change set creation time, CloudFormation calls the
+  # GitHubInclude Lambda with this transform node.
+  # The Lambda fetches snippets/s3-logging-bucket.yaml from
+  # the specified GitHub repo and replaces this entire
+  # Fn::Transform block with the parsed YAML content.
+  #
+  # Result: LoggingBucket and LoggingBucketPolicy resources
+  # are injected here as if they were written inline.
+  # -----------------------------------------------------------
+  Fn::Transform:
+    Name: GitHubInclude
+    Parameters:
+      Owner: !Ref GitHubOwner
+      Repo: !Ref GitHubRepo
+      Path: snippets/s3-logging-bucket.yaml
+      Ref: !Ref GitHubRef
+
+Outputs:
+  AppBucketName:
+    Value: !Ref AppBucket
+  LoggingBucketName:
+    Value: !Ref LoggingBucket  # this resource came from GitHub

@@ -1,0 +1,28 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Leaf-level nested stack demonstrating the secondary error where
+  SSM parameter names passed from CommonStack also fail during
+  nested change set creation.
+
+Parameters:
+  Environment:
+    Type: String
+  PrivateHostedZoneId:
+    Description: SSM parameter name (path) for the hosted zone ID
+    Type: String
+  PrivateHostedZoneName:
+    Description: SSM parameter name (path) for the hosted zone name
+    Type: String
+
+Resources:
+  WaitHandle:
+    Type: AWS::CloudFormation::WaitConditionHandle
+    Metadata:
+      ResolvedZoneId: !Sub "{{resolve:ssm:${PrivateHostedZoneId}}}"
+      ResolvedZoneName: !Sub "{{resolve:ssm:${PrivateHostedZoneName}}}"
+
+Outputs:
+  ResolvedHostedZoneId:
+    Value: !Sub "{{resolve:ssm:${PrivateHostedZoneId}}}"
+  ResolvedHostedZoneName:
+    Value: !Sub "{{resolve:ssm:${PrivateHostedZoneName}}}"

@@ -1,0 +1,46 @@
+# This file lives in your GitHub repo at:
+# snippets/s3-logging-bucket.yaml
+#
+# The GitHubInclude macro fetches this file and injects
+# it directly into the CloudFormation template at the
+# location of the Fn::Transform call.
+#
+# IMPORTANT: This file must contain valid CloudFormation
+# fragment YAML - i.e. it should be a map of resource
+# definitions that can be merged into the Resources section.
+
+LoggingBucket:
+  Type: AWS::S3::Bucket
+  Properties:
+    BucketName: !Sub "${AWS::StackName}-access-logs"
+    AccessControl: LogDeliveryWrite
+    VersioningConfiguration:
+      Status: Enabled
+    LifecycleConfiguration:
+      Rules:
+        - Id: ExpireOldLogs
+          Status: Enabled
+          ExpirationInDays: 90
+    PublicAccessBlockConfiguration:
+      BlockPublicAcls: true
+      BlockPublicPolicy: true
+      IgnorePublicAcls: true
+      RestrictPublicBuckets: true
+
+LoggingBucketPolicy:
+  Type: AWS::S3::BucketPolicy
+  Properties:
+    Bucket: !Ref LoggingBucket
+    PolicyDocument:
+      Version: "2012-10-17"
+      Statement:
+        - Sid: AllowSSLOnly
+          Effect: Deny
+          Principal: "*"
+          Action: s3:*
+          Resource:
+            - !GetAtt LoggingBucket.Arn
+            - !Sub "${LoggingBucket.Arn}/*"
+          Condition:
+            Bool:
+              aws:SecureTransport: false

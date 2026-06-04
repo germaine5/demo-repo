@@ -1,0 +1,43 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Parent stack that replicates the nested change set issue where
+  !GetAtt references to nested stack outputs (used as SSM parameter paths)
+  cause "Unable to fetch parameters" errors during change set creation
+  with "Include nested stacks in change set" enabled.
+
+Parameters:
+  InfraS3Bucket:
+    Type: String
+    Description: S3 bucket URL where nested templates are stored
+  BuildName:
+    Type: String
+    Description: Build name for template path resolution
+  BuildId:
+    Type: String
+    Description: Build ID for template path resolution
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+
+Resources:
+  # -----------------------------------------------------------
+  # CommonStack - contains IAM resources and other nested stacks
+  # -----------------------------------------------------------
+  CommonStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub "${InfraS3Bucket}/infra/${BuildName}/${BuildId}/child-stacks/common/common-stack.yaml"
+      Parameters:
+        InfraS3Bucket: !Ref InfraS3Bucket
+        BuildName: !Ref BuildName
+        BuildId: !Ref BuildId
+        Environment: !Ref Environment
+
+Outputs:
+  CommonStackId:
+    Description: Stack ID of the CommonStack
+    Value: !Ref CommonStack

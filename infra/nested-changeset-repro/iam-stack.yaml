@@ -1,0 +1,26 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  IAMStack - outputs the SSM parameter name that was pre-created
+  by the bootstrap stack. In the customer's real environment, this
+  stack creates the role and SSM param; here we just reference the
+  pre-existing path to avoid conflicts.
+
+Parameters:
+  Environment:
+    Type: String
+
+Resources:
+  # Placeholder resource (every stack needs at least one resource)
+  # In the real setup this stack creates IAM roles and SSM params
+  WaitHandle:
+    Type: AWS::CloudFormation::WaitConditionHandle
+
+Outputs:
+  # This output returns the SSM parameter NAME (path), not the value.
+  # The parent stack passes this via !GetAtt to MvaxStack.
+  EcsScalableTargetRoleSsmOutput:
+    Description: SSM parameter name containing the scalable target role ARN
+    Value: !Sub "/dx/infra/${Environment}-common/service-scheduler-role-arn"
+  EcsScalableTargetRoleArn:
+    Description: Direct reference to the role ARN SSM path
+    Value: !Sub "/dx/infra/${Environment}-common/service-scheduler-role-arn"

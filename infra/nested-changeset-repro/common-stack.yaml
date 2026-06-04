@@ -1,0 +1,65 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  CommonStack - deploys IAMStack and MvaxStack.
+  Passes !GetAtt outputs from IAMStack to MvaxStack, which triggers
+  the nested change set resolution failure.
+
+Parameters:
+  InfraS3Bucket:
+    Type: String
+    Description: S3 bucket URL where nested templates are stored
+  BuildName:
+    Type: String
+    Description: Build name for template path resolution
+  BuildId:
+    Type: String
+    Description: Build ID for template path resolution
+  Environment:
+    Type: String
+
+Resources:
+  # -----------------------------------------------------------
+  # IAMStack - outputs SSM parameter paths
+  # -----------------------------------------------------------
+  IAMStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub "${InfraS3Bucket}/infra/${BuildName}/${BuildId}/child-stacks/common/common-child/iam-stack.yaml"
+      Parameters:
+        Environment: !Ref Environment
+
+  # -----------------------------------------------------------
+  # MvaxStack - receives the SSM path via !GetAtt from IAMStack
+  #
+  # Normal deploy: !GetAtt resolves to the string path
+  #   "/dx/infra/dev-common/service-scheduler-role-arn"
+  #   which is then passed down to leaf stacks that use
+  #   AWS::SSM::Parameter::Value<String> to look it up.
+  #
+  # Nested change set: CloudFormation cannot resolve !GetAtt
+  #   and passes the raw token to SSM, causing the error.
+  # -----------------------------------------------------------
+  MvaxStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: IAMStack
+    Properties:
+      TemplateURL: !Sub "${InfraS3Bucket}/infra/${BuildName}/${BuildId}/child-stacks/common/common-child/mvax-parent.yaml"
+      Parameters:
+        InfraS3Bucket: !Ref InfraS3Bucket
+        BuildName: !Ref BuildName
+        BuildId: !Ref BuildId
+        Environment: !Ref Environment
+        # -------------------------------------------------------
+        # THE PROBLEMATIC PATTERN:
+        # !GetAtt across nested stack boundary → passed to a child
+        # that uses AWS::SSM::Parameter::Value<String>
+        # -------------------------------------------------------
+        ScalableTargetRoleArnSsm: !GetAtt IAMStack.Outputs.EcsScalableTargetRoleSsmOutput
+        PrivateHostedZoneId: !Sub "/dx/infra/${Environment}-common/private-hosted-zone-id"
+        PrivateHostedZoneName: !Sub "/dx/infra/${Environment}-common/private-hosted-zone-name"
+
+Outputs:
+  IAMStackId:
+    Value: !Ref IAMStack
+  MvaxStackId:
+    Value: !Ref MvaxStack

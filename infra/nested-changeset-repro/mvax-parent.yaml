@@ -1,0 +1,46 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  MvaxStack (mvax-parent) - intermediate nested stack that passes
+  the SSM parameter path down to the App stack. All parameters here
+  are plain String type - no SSM resolution happens at this level.
+
+Parameters:
+  InfraS3Bucket:
+    Type: String
+  BuildName:
+    Type: String
+  BuildId:
+    Type: String
+  Environment:
+    Type: String
+  ScalableTargetRoleArnSsm:
+    Description: SSM parameter name for the scalable target role ARN (plain string path)
+    Type: String
+  PrivateHostedZoneId:
+    Description: SSM parameter name for private hosted zone ID (plain string path)
+    Type: String
+  PrivateHostedZoneName:
+    Description: SSM parameter name for private hosted zone name (plain string path)
+    Type: String
+
+Resources:
+  # -----------------------------------------------------------
+  # App Stack - consumes the SSM parameter path and passes it
+  # further down to child stacks (e.g., AuroraDatabase)
+  # -----------------------------------------------------------
+  App:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub "${InfraS3Bucket}/infra/${BuildName}/${BuildId}/child-stacks/common/common-child/app.yaml"
+      Parameters:
+        InfraS3Bucket: !Ref InfraS3Bucket
+        BuildName: !Ref BuildName
+        BuildId: !Ref BuildId
+        Environment: !Ref Environment
+        ScalableTargetRoleArnSsm: !Ref ScalableTargetRoleArnSsm
+        PrivateHostedZoneId: !Ref PrivateHostedZoneId
+        PrivateHostedZoneName: !Ref PrivateHostedZoneName
+
+Outputs:
+  AppStackId:
+    Value: !Ref App

@@ -1,0 +1,66 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Private API Gateway for tasks-service
+
+Parameters:
+  VpcId:
+    Type: String
+    Description: VPC ID
+  VpceId:
+    Type: String
+    Description: VPC Endpoint ID
+
+Resources:
+  APIApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: test-import-rest-api
+      Description: API for tasks-service
+      EndpointConfiguration:
+        Types:
+          - PRIVATE
+        VpcEndpointIds:
+          - !Ref VpceId
+      Body:
+        swagger: "2.0"
+        info:
+          title: tasks-service
+          version: "1.0.0"
+          x-api-specification-compliant: true
+          x-bmo-api-provider-id: "90659"
+          x-bmo-api-type: internal-api
+          x-bmoservicedomain-name: tasks-service
+        schemes:
+          - https
+        paths: {}
+        definitions: {}
+        x-amazon-apigateway-policy:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal: "*"
+              Action: execute-api:Invoke
+              Resource: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:*"
+              Condition:
+                StringEquals:
+                  aws:SourceVpc:
+                    - !Ref VpcId
+            - Effect: Allow
+              Principal: "*"
+              Action: execute-api:Invoke
+              Resource: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:*"
+              Condition:
+                StringNotEquals:
+                  aws:SourceVpce:
+                    - !Ref VpceId
+        x-amazon-apigateway-gateway-responses: {}
+        x-amazon-apigateway-request-validators:
+          Validate body, query string parameters, and headers:
+            validateRequestParameters: false
+
+Outputs:
+  RestApiId:
+    Description: API Gateway REST API ID
+    Value: !Ref APIApiGateway
+  RestApiRootResourceId:
+    Description: Root resource ID of the REST API
+    Value: !GetAtt APIApiGateway.RootResourceId
