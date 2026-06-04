@@ -50,7 +50,8 @@ infra/github-macro-repro/
 Create a folder called `snippets` in your GitHub repo and push the snippet file:
 
 ```bash
-# In your GitHub repo
+# 
+
 mkdir snippets
 cp infra/github-macro-repro/github-snippets/s3-logging-bucket.yaml snippets/
 git add snippets/s3-logging-bucket.yaml
