@@ -49,7 +49,7 @@ Resources:
     Parameters:
       Owner: !Ref GitHubOwner
       Repo: !Ref GitHubRepo
-      Path: snippets/s3-logging-bucket.yaml
+      Path: infra/github-macro-repro/github-snippets/s3-logging-bucket.yaml
       Ref: !Ref GitHubRef
 
 Outputs:
