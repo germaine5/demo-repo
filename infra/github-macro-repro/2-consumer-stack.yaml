@@ -3,18 +3,22 @@ Description: >
   Consumer template that uses the GitHubInclude macro to pull
   a reusable snippet from a GitHub repository and inject it
   into the Resources section at change set creation time.
+  
+  The macro is declared at the top level so it processes the
+  ENTIRE template. It looks for any resource with Type:
+  GitHubInclude::Snippet and replaces it with the fetched content.
 
-# Declare the macro at the top level so CloudFormation
-# runs it over the entire template before deployment.
 Transform: GitHubInclude
 
 Parameters:
   GitHubOwner:
     Type: String
-    Description: GitHub username or org (e.g. "my-org")
+    Default: germaine5
+    Description: GitHub username or org
   GitHubRepo:
     Type: String
-    Description: GitHub repository name (e.g. "my-infra-snippets")
+    Default: demo-repo
+    Description: GitHub repository name
   GitHubRef:
     Type: String
     Default: main
@@ -22,38 +26,32 @@ Parameters:
 
 Resources:
   # -----------------------------------------------------------
-  # Regular resource defined directly in this template
+  # Marker resource - the macro replaces this entire resource
+  # with the resources fetched from GitHub.
+  # The macro recognises Type: GitHubInclude::Snippet and
+  # expands it into the real resources.
+  # -----------------------------------------------------------
+  GitHubSnippet:
+    Type: GitHubInclude::Snippet
+    Properties:
+      Owner: germaine5
+      Repo: demo-repo
+      Path: infra/github-macro-repro/github-snippets/s3-logging-bucket.json
+      Ref: main
+
+  # -----------------------------------------------------------
+  # Regular resource that references the injected LoggingBucket
   # -----------------------------------------------------------
   AppBucket:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub "${AWS::StackName}-app-data"
       LoggingConfiguration:
-        DestinationBucketName: !Ref LoggingBucket  # injected by macro below
+        DestinationBucketName: !Ref LoggingBucket
         LogFilePrefix: app-data/
-
-  # -----------------------------------------------------------
-  # GitHubInclude macro invocation
-  #
-  # At change set creation time, CloudFormation calls the
-  # GitHubInclude Lambda with this transform node.
-  # The Lambda fetches snippets/s3-logging-bucket.yaml from
-  # the specified GitHub repo and replaces this entire
-  # Fn::Transform block with the parsed YAML content.
-  #
-  # Result: LoggingBucket and LoggingBucketPolicy resources
-  # are injected here as if they were written inline.
-  # -----------------------------------------------------------
-  Fn::Transform:
-    Name: GitHubInclude
-    Parameters:
-      Owner: !Ref GitHubOwner
-      Repo: !Ref GitHubRepo
-      Path: infra/github-macro-repro/github-snippets/s3-logging-bucket.json
-      Ref: !Ref GitHubRef
 
 Outputs:
   AppBucketName:
     Value: !Ref AppBucket
   LoggingBucketName:
-    Value: !Ref LoggingBucket  # this resource came from GitHub
+    Value: !Ref LoggingBucket

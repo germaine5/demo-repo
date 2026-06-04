@@ -13,9 +13,6 @@ Parameters:
       Leave empty for public repos.
 
 Resources:
-  # -----------------------------------------------------------
-  # Store the GitHub token in Secrets Manager
-  # -----------------------------------------------------------
   GitHubTokenSecret:
     Type: AWS::SecretsManager::Secret
     Properties:
@@ -23,9 +20,6 @@ Resources:
       Description: GitHub PAT used by the GitHubInclude CFN macro
       SecretString: !Ref GitHubToken
 
-  # -----------------------------------------------------------
-  # IAM Role for the macro Lambda
-  # -----------------------------------------------------------
   MacroLambdaRole:
     Type: AWS::IAM::Role
     Properties:
@@ -49,10 +43,6 @@ Resources:
                   - secretsmanager:GetSecretValue
                 Resource: !Ref GitHubTokenSecret
 
-  # -----------------------------------------------------------
-  # Lambda function - stdlib only, no external dependencies
-  # Snippet files must be JSON (not YAML) to avoid pyyaml dep
-  # -----------------------------------------------------------
   MacroLambda:
     Type: AWS::Lambda::Function
     Properties:
@@ -75,14 +65,9 @@ Resources:
               client = boto3.client("secretsmanager")
               secret = client.get_secret_value(SecretId=os.environ["SECRET_ARN"])
               value = secret["SecretString"]
-              # Return None if empty so we skip the auth header
               return value if value.strip() else None
 
           def fetch_github_file(owner, repo, path, ref, token):
-              """
-              Fetch raw file from GitHub Contents API.
-              Returns the raw bytes decoded as UTF-8 string.
-              """
               url = (
                   f"https://api.github.com/repos/{owner}/{repo}"
                   f"/contents/{path}?ref={ref}"
@@ -93,61 +78,63 @@ Resources:
               }
               if token:
                   headers["Authorization"] = f"token {token}"
-
               req = urllib.request.Request(url, headers=headers)
               with urllib.request.urlopen(req) as resp:
                   return resp.read().decode("utf-8")
 
-          def process_fragment(fragment, token):
-              """
-              Recursively walk the template fragment.
-              When a GitHubInclude Fn::Transform node is found,
-              fetch the JSON file from GitHub and replace the node
-              with the parsed content.
-
-              Usage in template:
-                Fn::Transform:
-                  Name: GitHubInclude
-                  Parameters:
-                    Owner: germaine5
-                    Repo:  demo-repo
-                    Path:  infra/github-macro-repro/github-snippets/s3-logging-bucket.json
-                    Ref:   main
-              """
-              if isinstance(fragment, dict):
-                  if (
-                      "Fn::Transform" in fragment
-                      and isinstance(fragment["Fn::Transform"], dict)
-                      and fragment["Fn::Transform"].get("Name") == "GitHubInclude"
-                  ):
-                      params = fragment["Fn::Transform"].get("Parameters", {})
-                      owner = params["Owner"]
-                      repo  = params["Repo"]
-                      path  = params["Path"]
-                      ref   = params.get("Ref", "main")
-
-                      print(f"Fetching: github.com/{owner}/{repo}/{path}@{ref}")
-                      raw = fetch_github_file(owner, repo, path, ref, token)
-                      return json.loads(raw)
-
-                  return {k: process_fragment(v, token) for k, v in fragment.items()}
-
-              if isinstance(fragment, list):
-                  return [process_fragment(item, token) for item in fragment]
-
-              return fragment
-
           def handler(event, context):
+              """
+              Top-level macro handler. Receives the full template fragment.
+
+              Finds any resource with Type: GitHubInclude::Snippet in the
+              Resources section, fetches the JSON file from GitHub, and
+              merges the returned resources into the Resources section,
+              removing the marker resource.
+
+              Snippet JSON format (flat map of CFN resources):
+              {
+                "LoggingBucket": { "Type": "AWS::S3::Bucket", ... },
+                "LoggingBucketPolicy": { "Type": "AWS::S3::BucketPolicy", ... }
+              }
+              """
               print("Event:", json.dumps(event))
               try:
-                  token     = get_github_token()
-                  fragment  = event["fragment"]
-                  processed = process_fragment(fragment, token)
+                  token    = get_github_token()
+                  fragment = event["fragment"]
+                  resources = fragment.get("Resources", {})
+
+                  # Find all GitHubInclude::Snippet markers
+                  markers = {
+                      k: v for k, v in resources.items()
+                      if v.get("Type") == "GitHubInclude::Snippet"
+                  }
+
+                  for marker_key, marker_val in markers.items():
+                      props = marker_val.get("Properties", {})
+                      owner = props["Owner"]
+                      repo  = props["Repo"]
+                      path  = props["Path"]
+                      ref   = props.get("Ref", "main")
+
+                      print(f"Fetching snippet: {owner}/{repo}/{path}@{ref}")
+                      raw = fetch_github_file(owner, repo, path, ref, token)
+                      snippet = json.loads(raw)
+
+                      # Remove the marker resource
+                      del resources[marker_key]
+
+                      # Merge the snippet resources in its place
+                      resources.update(snippet)
+                      print(f"Injected resources: {list(snippet.keys())}")
+
+                  fragment["Resources"] = resources
+
                   return {
                       "requestId": event["requestId"],
                       "status":    "success",
-                      "fragment":  processed,
+                      "fragment":  fragment,
                   }
+
               except Exception as e:
                   print(f"ERROR: {e}")
                   return {
@@ -167,7 +154,9 @@ Resources:
     Type: AWS::CloudFormation::Macro
     Properties:
       Name: GitHubInclude
-      Description: Fetches a JSON snippet from GitHub and injects it into the template
+      Description: >
+        Fetches a JSON snippet from GitHub and merges its resources
+        into the template Resources section at change set creation time.
       FunctionName: !GetAtt MacroLambda.Arn
 
 Outputs:
