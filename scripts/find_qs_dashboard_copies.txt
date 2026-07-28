@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+# =============================================================================
+# find_qs_dashboard_copies.sh
+#
+# Finds who performed "Save As" on a specific QuickSight dashboard and
+# who subsequently published a new dashboard from the resulting analysis.
+#
+# APPROACH:
+#   1. Use QuickSight API to get the dashboard name from its ID
+#   2. Use CloudTrail lookup-events filtered by ResourceName (dashboard name)
+#      to find CreateAnalysis events tied to that specific dashboard
+#   3. Use CloudTrail lookup-events to find CreateDashboard events by the
+#      same users within the same timeframe
+#
+# USAGE:
+#   chmod +x find_qs_dashboard_copies.sh
+#   ./find_qs_dashboard_copies.sh
+# =============================================================================
+
+# -------------------------------------------------------------------------
+# CONFIGURE THESE VALUES
+# -------------------------------------------------------------------------
+TARGET_DASHBOARD_ID="6xxxxxxxxxxxxxx"
+REGION="us-east-1"
+# -------------------------------------------------------------------------
+
+set -euo pipefail
+
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/null)
+if [ -z "$ACCOUNT_ID" ]; then
+    echo "ERROR: Could not determine AWS Account ID. Check your credentials." >&2
+    exit 1
+fi
+
+echo "================================================================"
+echo "  QuickSight 'Save As' Activity Report"
+echo "  Account : $ACCOUNT_ID"
+echo "  Region  : $REGION"
+echo "  Target  : $TARGET_DASHBOARD_ID"
+echo "================================================================"
+echo ""
+
+# -----------------------------------------------------------------------------
+# Step 1: Get the target dashboard name via QuickSight API
+# -----------------------------------------------------------------------------
+echo "Step 1: Looking up dashboard name from QuickSight..."
+
+TARGET_DASH_JSON=$(aws quicksight describe-dashboard \
+    --aws-account-id "$ACCOUNT_ID" \
+    --dashboard-id "$TARGET_DASHBOARD_ID" \
+    --region "$REGION" \
+    --output json 2>&1) || {
+    echo "ERROR: Could not describe dashboard '$TARGET_DASHBOARD_ID'."
+    echo "       Check the ID and that you have quicksight:DescribeDashboard permission."
+    exit 1
+}
+
+TARGET_DASH_NAME=$(echo "$TARGET_DASH_JSON" | jq -r '.Dashboard.Name')
+echo "  ✅ Dashboard name: \"$TARGET_DASH_NAME\""
+echo ""
+
+# -----------------------------------------------------------------------------
+# Helper: paginate through all CloudTrail lookup-events results
+# -----------------------------------------------------------------------------
+paginate_cloudtrail() {
+    local attr_key=$1
+    local attr_value=$2
+    local all_events="[]"
+    local next_token=""
+
+    while true; do
+        if [ -z "$next_token" ]; then
+            response=$(aws cloudtrail lookup-events \
+                --lookup-attributes AttributeKey="$attr_key",AttributeValue="$attr_value" \
+                --region "$REGION" \
+                --max-results 50 \
+                --output json)
+        else
+            response=$(aws cloudtrail lookup-events \
+                --lookup-attributes AttributeKey="$attr_key",AttributeValue="$attr_value" \
+                --region "$REGION" \
+                --max-results 50 \
+                --next-token "$next_token" \
+                --output json)
+        fi
+
+        all_events=$(echo "$all_events $response" | jq -s '.[0] + [.[1].Events[]?]')
+        next_token=$(echo "$response" | jq -r '.NextToken // empty')
+        [ -z "$next_token" ] && break
+    done
+
+    echo "$all_events"
+}
+
+# -----------------------------------------------------------------------------
+# Step 2: Find CreateAnalysis events tied to this dashboard by ResourceName
+# -----------------------------------------------------------------------------
+echo "Step 2: Searching CloudTrail for 'Save As' events on \"$TARGET_DASH_NAME\"..."
+
+# First try filtering by ResourceName (the dashboard name as known to CloudTrail)
+ALL_EVENTS=$(paginate_cloudtrail "ResourceName" "$TARGET_DASH_NAME")
+
+# Filter down to only CreateAnalysis events
+ANALYSIS_EVENTS=$(echo "$ALL_EVENTS" | jq -c '[.[] | select(.EventName == "CreateAnalysis")]')
+ANALYSIS_COUNT=$(echo "$ANALYSIS_EVENTS" | jq 'length')
+echo "  Found $ANALYSIS_COUNT CreateAnalysis event(s) for this dashboard."
+echo ""
+
+if [ "$ANALYSIS_COUNT" -eq 0 ]; then
+    echo "  No 'Save As' events found for \"$TARGET_DASH_NAME\" in the last 90 days."
+    echo ""
+    echo "  Falling back: showing ALL CreateAnalysis events (no dashboard filter)..."
+    ANALYSIS_EVENTS=$(paginate_cloudtrail "EventName" "CreateAnalysis")
+    ANALYSIS_COUNT=$(echo "$ANALYSIS_EVENTS" | jq 'length')
+    echo "  Found $ANALYSIS_COUNT total CreateAnalysis event(s) in account."
+    echo ""
+fi
+
+echo "----------------------------------------------------------------"
+echo "  'Save As' events (CreateAnalysis):"
+echo "----------------------------------------------------------------"
+
+if [ "$ANALYSIS_COUNT" -eq 0 ]; then
+    echo "  No CreateAnalysis events found in the last 90 days."
+else
+    SEEN_USERS="[]"
+    echo "$ANALYSIS_EVENTS" | jq -c '.[]' | while read -r event; do
+        RAW=$(echo "$event" | jq -r '.CloudTrailEvent | fromjson')
+        EVENT_TIME=$(echo "$RAW"  | jq -r '.eventTime')
+        USERNAME=$(echo "$RAW"    | jq -r '.userIdentity.arn // .userIdentity.principalId // .userIdentity.userName // "unknown"')
+        SOURCE_IP=$(echo "$RAW"   | jq -r '.sourceIPAddress // "unknown"')
+        ANALYSIS_ID=$(echo "$RAW" | jq -r '.requestParameters.analysisId // "N/A (console action — requestParameters null)"')
+
+        echo "  👤 User        : $USERNAME"
+        echo "     Time        : $EVENT_TIME"
+        echo "     Source IP   : $SOURCE_IP"
+        echo "     Analysis ID : $ANALYSIS_ID"
+        echo "----------------------------------------------------------------"
+    done
+fi
+
+echo ""
+
+# -----------------------------------------------------------------------------
+# Step 3: Find CreateDashboard events tied to this dashboard by ResourceName
+# -----------------------------------------------------------------------------
+echo "Step 3: Searching CloudTrail for 'Publish Dashboard' events on \"$TARGET_DASH_NAME\"..."
+
+# Re-use the ResourceName events already fetched, filter to CreateDashboard
+DASHBOARD_EVENTS=$(echo "$ALL_EVENTS" | jq -c '[.[] | select(.EventName == "CreateDashboard")]')
+DASHBOARD_COUNT=$(echo "$DASHBOARD_EVENTS" | jq 'length')
+
+if [ "$DASHBOARD_COUNT" -eq 0 ]; then
+    # Fallback: get all CreateDashboard events
+    DASHBOARD_EVENTS=$(paginate_cloudtrail "EventName" "CreateDashboard")
+    DASHBOARD_COUNT=$(echo "$DASHBOARD_EVENTS" | jq 'length')
+    echo "  No results filtered by dashboard name. Showing all $DASHBOARD_COUNT CreateDashboard event(s)."
+else
+    echo "  Found $DASHBOARD_COUNT CreateDashboard event(s) for this dashboard."
+fi
+
+echo ""
+echo "----------------------------------------------------------------"
+echo "  'Publish Dashboard' events (CreateDashboard):"
+echo "----------------------------------------------------------------"
+
+if [ "$DASHBOARD_COUNT" -eq 0 ]; then
+    echo "  No CreateDashboard events found in the last 90 days."
+else
+    echo "$DASHBOARD_EVENTS" | jq -c '.[]' | while read -r event; do
+        RAW=$(echo "$event" | jq -r '.CloudTrailEvent | fromjson')
+        EVENT_TIME=$(echo "$RAW"   | jq -r '.eventTime')
+        USERNAME=$(echo "$RAW"     | jq -r '.userIdentity.arn // .userIdentity.principalId // .userIdentity.userName // "unknown"')
+        SOURCE_IP=$(echo "$RAW"    | jq -r '.sourceIPAddress // "unknown"')
+        DASHBOARD_ID=$(echo "$RAW" | jq -r '.requestParameters.dashboardId // "N/A (console action — requestParameters null)"')
+
+        echo "  👤 User         : $USERNAME"
+        echo "     Time         : $EVENT_TIME"
+        echo "     Source IP    : $SOURCE_IP"
+        echo "     Dashboard ID : $DASHBOARD_ID"
+        echo "----------------------------------------------------------------"
+    done
+fi
+
+echo ""
+echo "================================================================"
+echo "  SUMMARY"
+echo "================================================================"
+echo "  Dashboard     : \"$TARGET_DASH_NAME\" ($TARGET_DASHBOARD_ID)"
+echo "  Save As count : $ANALYSIS_COUNT CreateAnalysis event(s)"
+echo "  Publish count : $DASHBOARD_COUNT CreateDashboard event(s)"
+echo ""
+echo "  Match 'Save As' → 'Publish' by finding the same username"
+echo "  where CreateDashboard time > CreateAnalysis time."
+echo "================================================================"

@@ -1,0 +1,130 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Step 1 (CREATE) — Baseline ElastiCache ServerlessCache stack matching customer config.
+  Engine: valkey, MajorEngineVersion: '9', DataStorage: { Minimum: '272', Unit: 'GB' }.
+  No ECPUPerSecond at creation — this is the baseline state from which the
+  bug-triggering updates in template-v2 and template-v3 are applied.
+  Region: us-west-2 (deploy there to match customer environment).
+
+# ---------------------------------------------------------------------------
+# Parameters
+# ---------------------------------------------------------------------------
+Parameters:
+  CacheName:
+    Type: String
+    Default: ecache-repro
+    Description: Unique name for the ServerlessCache resource (must be unique per account/region).
+
+  VpcCidr:
+    Type: String
+    Default: 10.100.0.0/16
+    Description: CIDR block for the VPC created by this stack.
+
+  Subnet1Cidr:
+    Type: String
+    Default: 10.100.1.0/24
+    Description: CIDR for the first private subnet (AZ a).
+
+  Subnet2Cidr:
+    Type: String
+    Default: 10.100.2.0/24
+    Description: CIDR for the second private subnet (AZ b).
+
+# ---------------------------------------------------------------------------
+# Resources
+# ---------------------------------------------------------------------------
+Resources:
+
+  # --- Networking -----------------------------------------------------------
+
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-vpc'
+
+  Subnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref Subnet1Cidr
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-subnet-1'
+
+  Subnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref Subnet2Cidr
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-subnet-2'
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'Security group for ${AWS::StackName} ElastiCache ServerlessCache'
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-sg'
+
+  # --- ElastiCache ServerlessCache (matches customer's initial CREATE config) ---
+  #
+  # Customer created with:
+  #   Engine: valkey
+  #   MajorEngineVersion: '9'
+  #   CacheUsageLimits.DataStorage: { Minimum: '272', Unit: 'GB' }
+  #   (NO ECPUPerSecond at creation)
+  #
+  # This is the exact baseline from which the failing updates were applied.
+
+  ServerlessCache:
+    Type: AWS::ElastiCache::ServerlessCache
+    Properties:
+      ServerlessCacheName: !Ref CacheName
+      Engine: valkey
+      MajorEngineVersion: '9'
+      Description: 'Repro stack for ElastiCache ServerlessCache update/rollback failure bug'
+      SubnetIds:
+        - !Ref Subnet1
+        - !Ref Subnet2
+      SecurityGroupIds:
+        - !Ref SecurityGroup
+      CacheUsageLimits:
+        DataStorage:
+          Minimum: '272'
+          Unit: GB
+      # ECPUPerSecond is intentionally absent — added in template-v3 to trigger the bug.
+      Tags:
+        - Key: ReproStep
+          Value: 'v1-create'
+
+# ---------------------------------------------------------------------------
+# Outputs
+# ---------------------------------------------------------------------------
+Outputs:
+  ServerlessCacheArn:
+    Description: ARN of the created ServerlessCache
+    Value: !GetAtt ServerlessCache.ARN
+
+  ServerlessCacheEndpoint:
+    Description: Primary endpoint address
+    Value: !GetAtt ServerlessCache.Endpoint.Address
+
+  ServerlessCacheStatus:
+    Description: Current status of the ServerlessCache
+    Value: !GetAtt ServerlessCache.Status
+
+  VpcId:
+    Description: VPC ID (exported for reference)
+    Value: !Ref VPC
+    Export:
+      Name: !Sub '${AWS::StackName}-VpcId'

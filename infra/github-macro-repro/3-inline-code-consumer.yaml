@@ -1,0 +1,47 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Demonstrates injecting inline Lambda function code from a
+  private GitHub repo using the GitHubInclude macro.
+  The actual Python code lives in GitHub, not in this template.
+
+Transform: GitHubInclude
+
+Resources:
+  # IAM role for the Lambda
+  HelloFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  # Lambda function whose CODE lives in GitHub
+  # The macro replaces the GitHubInclude::InlineCode marker
+  # with the raw Python code from the repo before CFN deploys
+  HelloFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-hello"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt HelloFunctionRole.Arn
+      Timeout: 10
+      Code:
+        ZipFile:
+          GitHubInclude::InlineCode:
+            Owner: germaine5
+            Repo: demo-repo
+            Path: infra/github-macro-repro/github-snippets/hello-handler.py
+            Ref: main
+
+Outputs:
+  FunctionName:
+    Value: !Ref HelloFunction
+  FunctionArn:
+    Value: !GetAtt HelloFunction.Arn

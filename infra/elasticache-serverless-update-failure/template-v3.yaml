@@ -1,0 +1,145 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Step 3 (UPDATE — failure + rollback failure) — Adds ECPUPerSecond: { Minimum: '2000' }
+  while retaining MajorEngineVersion: '9' and DataStorage: { Minimum: '272', Unit: 'GB' }.
+  This matches the customer's exact failing update configuration in us-west-2.
+  Deploy this template ONLY after template-v2 has reached UPDATE_COMPLETE.
+  Expected bug behavior: UPDATE_FAILED with "Internal failure", then UPDATE_ROLLBACK_FAILED.
+  Region: us-west-2
+
+# ---------------------------------------------------------------------------
+# Parameters
+# ---------------------------------------------------------------------------
+Parameters:
+  CacheName:
+    Type: String
+    Default: ecache-repro
+    Description: >
+      Must match the CacheName used in template-v1.yaml and template-v2.yaml.
+      ServerlessCacheName is a replacement property — do not change this value.
+
+  VpcCidr:
+    Type: String
+    Default: 10.100.0.0/16
+
+  Subnet1Cidr:
+    Type: String
+    Default: 10.100.1.0/24
+
+  Subnet2Cidr:
+    Type: String
+    Default: 10.100.2.0/24
+
+# ---------------------------------------------------------------------------
+# Resources
+# ---------------------------------------------------------------------------
+Resources:
+
+  # --- Networking (unchanged from v1 / v2) ---------------------------------
+
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-vpc'
+
+  Subnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref Subnet1Cidr
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-subnet-1'
+
+  Subnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref Subnet2Cidr
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-subnet-2'
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'Security group for ${AWS::StackName} ElastiCache ServerlessCache'
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-sg'
+
+  # --- ElastiCache ServerlessCache (adds ECPUPerSecond, retains DataStorage + MajorEngineVersion) ---
+  #
+  # BUG TRIGGER: This matches the customer's exact failing update.
+  # Starting from a stack where MajorEngineVersion: '9' was just successfully applied
+  # and DataStorage: { Minimum: '272', Unit: 'GB' } has been set since creation,
+  # this update adds CacheUsageLimits.ECPUPerSecond.Minimum: '2000'.
+  #
+  # Customer config at time of failure:
+  #   Engine: valkey
+  #   MajorEngineVersion: '9'
+  #   CacheUsageLimits.DataStorage: { Minimum: '272', Unit: 'GB' }  ← already present
+  #   CacheUsageLimits.ECPUPerSecond: { Minimum: '2000' }           ← NEW (bug trigger)
+  #
+  # Expected (correct) behavior: UPDATE_COMPLETE
+  # Actual (buggy) behavior:
+  #   1. UPDATE_FAILED — "Resource handler returned message: Internal failure ..."
+  #   2. CloudFormation triggers rollback
+  #   3. UPDATE_ROLLBACK_FAILED — rollback also fails with "Internal failure"
+  #   4. Stack is permanently stuck in UPDATE_ROLLBACK_FAILED
+  #
+  # Recovery after reproduction:
+  #   aws cloudformation continue-update-rollback --stack-name <stack-name> --region us-west-2
+  # Or delete the stack entirely.
+
+  ServerlessCache:
+    Type: AWS::ElastiCache::ServerlessCache
+    Properties:
+      ServerlessCacheName: !Ref CacheName
+      Engine: valkey
+      MajorEngineVersion: '9'       # retained from v2
+      Description: 'Repro stack for ElastiCache ServerlessCache update/rollback failure bug'
+      SubnetIds:
+        - !Ref Subnet1
+        - !Ref Subnet2
+      SecurityGroupIds:
+        - !Ref SecurityGroup
+      CacheUsageLimits:
+        DataStorage:                 # retained unchanged from v1/v2
+          Minimum: '272'
+          Unit: GB
+        ECPUPerSecond:               # <-- NEW: this is the bug trigger
+          Minimum: '2000'
+      Tags:
+        - Key: ReproStep
+          Value: 'v3-add-ecpu-per-second'
+
+# ---------------------------------------------------------------------------
+# Outputs
+# ---------------------------------------------------------------------------
+Outputs:
+  ServerlessCacheArn:
+    Description: ARN of the ServerlessCache
+    Value: !GetAtt ServerlessCache.ARN
+
+  ServerlessCacheStatus:
+    Description: >
+      Expected to show AVAILABLE if the fix is applied, or remain stuck
+      if the bug is reproduced on unfixed service.
+    Value: !GetAtt ServerlessCache.Status
+
+  MajorEngineVersion:
+    Description: Major engine version (should remain 9 after fix)
+    Value: '9'
+
+  ECPUPerSecondMinimum:
+    Description: Minimum ECPU per second configured (only relevant if update succeeds)
+    Value: '2000'

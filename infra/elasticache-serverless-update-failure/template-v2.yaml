@@ -1,0 +1,126 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Step 2 (UPDATE — intermittent failure, then success) — MajorEngineVersion: '9' first attempt.
+  The customer's first update added MajorEngineVersion: '9' to an existing stack that already
+  had DataStorage limits set at creation. This intermittently failed with "Internal failure"
+  but rollback succeeded. The second attempt with the same change succeeded (UPDATE_COMPLETE).
+  Deploy this against the stack from template-v1.yaml. Retry if it fails intermittently.
+  Region: us-west-2
+
+# ---------------------------------------------------------------------------
+# Parameters
+# ---------------------------------------------------------------------------
+Parameters:
+  CacheName:
+    Type: String
+    Default: ecache-repro
+    Description: >
+      Must match the CacheName used in template-v1.yaml.
+      ServerlessCacheName is a replacement property — do not change this value.
+
+  VpcCidr:
+    Type: String
+    Default: 10.100.0.0/16
+
+  Subnet1Cidr:
+    Type: String
+    Default: 10.100.1.0/24
+
+  Subnet2Cidr:
+    Type: String
+    Default: 10.100.2.0/24
+
+# ---------------------------------------------------------------------------
+# Resources
+# ---------------------------------------------------------------------------
+Resources:
+
+  # --- Networking (unchanged from v1) --------------------------------------
+
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-vpc'
+
+  Subnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref Subnet1Cidr
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-subnet-1'
+
+  Subnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref Subnet2Cidr
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-subnet-2'
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'Security group for ${AWS::StackName} ElastiCache ServerlessCache'
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-sg'
+
+  # --- ElastiCache ServerlessCache (adds MajorEngineVersion: '9', retains DataStorage) ---
+  #
+  # BUG TRIGGER: First update — adds MajorEngineVersion to a stack that had DataStorage
+  # set at creation but no MajorEngineVersion. Intermittently fails with:
+  #   "Resource handler returned message: Internal failure (Service: ElastiCache, ...)"
+  # Rollback succeeds → stack returns to UPDATE_ROLLBACK_COMPLETE.
+  # Retry until UPDATE_COMPLETE before applying template-v3.
+
+  ServerlessCache:
+    Type: AWS::ElastiCache::ServerlessCache
+    Properties:
+      ServerlessCacheName: !Ref CacheName
+      Engine: valkey
+      MajorEngineVersion: '9'   # <-- NEW: was absent in v1
+      Description: 'Repro stack for ElastiCache ServerlessCache update/rollback failure bug'
+      SubnetIds:
+        - !Ref Subnet1
+        - !Ref Subnet2
+      SecurityGroupIds:
+        - !Ref SecurityGroup
+      CacheUsageLimits:         # retained unchanged from v1
+        DataStorage:
+          Minimum: '272'
+          Unit: GB
+      # ECPUPerSecond still absent — added in template-v3.
+      Tags:
+        - Key: ReproStep
+          Value: 'v2-add-major-engine-version'
+
+# ---------------------------------------------------------------------------
+# Outputs
+# ---------------------------------------------------------------------------
+Outputs:
+  ServerlessCacheArn:
+    Description: ARN of the ServerlessCache
+    Value: !GetAtt ServerlessCache.ARN
+
+  ServerlessCacheEndpoint:
+    Description: Primary endpoint address
+    Value: !GetAtt ServerlessCache.Endpoint.Address
+
+  ServerlessCacheStatus:
+    Description: Current status of the ServerlessCache
+    Value: !GetAtt ServerlessCache.Status
+
+  MajorEngineVersion:
+    Description: Major engine version now applied
+    Value: '9'

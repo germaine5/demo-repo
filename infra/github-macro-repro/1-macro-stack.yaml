@@ -82,59 +82,96 @@ Resources:
               with urllib.request.urlopen(req) as resp:
                   return resp.read().decode("utf-8")
 
-          def handler(event, context):
-              """
-              Top-level macro handler. Receives the full template fragment.
-
-              Finds any resource with Type: GitHubInclude::Snippet in the
-              Resources section, fetches the JSON file from GitHub, and
-              merges the returned resources into the Resources section,
-              removing the marker resource.
-
-              Snippet JSON format (flat map of CFN resources):
-              {
-                "LoggingBucket": { "Type": "AWS::S3::Bucket", ... },
-                "LoggingBucketPolicy": { "Type": "AWS::S3::BucketPolicy", ... }
+          # ----------------------------------------------------------
+          # PATTERN 1: Resource snippet injection
+          # Finds resources with Type: GitHubInclude::Snippet and
+          # replaces them with a flat map of CFN resources fetched
+          # from GitHub as a JSON file.
+          #
+          # Usage in template:
+          #   MySnippet:
+          #     Type: GitHubInclude::Snippet
+          #     Properties:
+          #       Owner: germaine5
+          #       Repo:  demo-repo
+          #       Path:  snippets/s3-logging-bucket.json
+          #       Ref:   main
+          # ----------------------------------------------------------
+          def inject_resource_snippets(fragment, token):
+              resources = fragment.get("Resources", {})
+              markers = {
+                  k: v for k, v in resources.items()
+                  if isinstance(v, dict) and v.get("Type") == "GitHubInclude::Snippet"
               }
-              """
-              print("Event:", json.dumps(event))
-              try:
-                  token    = get_github_token()
-                  fragment = event["fragment"]
-                  resources = fragment.get("Resources", {})
+              for marker_key, marker_val in markers.items():
+                  props = marker_val.get("Properties", {})
+                  owner = props["Owner"]
+                  repo  = props["Repo"]
+                  path  = props["Path"]
+                  ref   = props.get("Ref", "main")
+                  print(f"[Snippet] Fetching: {owner}/{repo}/{path}@{ref}")
+                  raw     = fetch_github_file(owner, repo, path, ref, token)
+                  snippet = json.loads(raw)
+                  del resources[marker_key]
+                  resources.update(snippet)
+                  print(f"[Snippet] Injected: {list(snippet.keys())}")
+              fragment["Resources"] = resources
+              return fragment
 
-                  # Find all GitHubInclude::Snippet markers
-                  markers = {
-                      k: v for k, v in resources.items()
-                      if v.get("Type") == "GitHubInclude::Snippet"
-                  }
-
-                  for marker_key, marker_val in markers.items():
-                      props = marker_val.get("Properties", {})
+          # ----------------------------------------------------------
+          # PATTERN 2: Inline code injection
+          # Recursively walks the entire template tree looking for
+          # a dict with a single key "GitHubInclude::InlineCode".
+          # Replaces it with the raw file content as a plain string.
+          #
+          # Usage in template (e.g. Lambda ZipFile):
+          #   MyLambda:
+          #     Type: AWS::Lambda::Function
+          #     Properties:
+          #       Code:
+          #         ZipFile:
+          #           GitHubInclude::InlineCode:
+          #             Owner: germaine5
+          #             Repo:  demo-repo
+          #             Path:  src/handlers/my-function.py
+          #             Ref:   main
+          #
+          # The entire ZipFile value becomes the raw Python/JS/etc code.
+          # ----------------------------------------------------------
+          def inject_inline_code(node, token):
+              if isinstance(node, dict):
+                  # Check if this dict IS an InlineCode marker
+                  if list(node.keys()) == ["GitHubInclude::InlineCode"]:
+                      props = node["GitHubInclude::InlineCode"]
                       owner = props["Owner"]
                       repo  = props["Repo"]
                       path  = props["Path"]
                       ref   = props.get("Ref", "main")
-
-                      print(f"Fetching snippet: {owner}/{repo}/{path}@{ref}")
+                      print(f"[InlineCode] Fetching: {owner}/{repo}/{path}@{ref}")
                       raw = fetch_github_file(owner, repo, path, ref, token)
-                      snippet = json.loads(raw)
+                      print(f"[InlineCode] Injected {len(raw)} chars from {path}")
+                      return raw  # replace the marker dict with the raw string
+                  # Recurse into all values
+                  return {k: inject_inline_code(v, token) for k, v in node.items()}
+              if isinstance(node, list):
+                  return [inject_inline_code(item, token) for item in node]
+              return node
 
-                      # Remove the marker resource
-                      del resources[marker_key]
+          def handler(event, context):
+              print("Event:", json.dumps(event))
+              try:
+                  token    = get_github_token()
+                  fragment = event["fragment"]
 
-                      # Merge the snippet resources in its place
-                      resources.update(snippet)
-                      print(f"Injected resources: {list(snippet.keys())}")
-
-                  fragment["Resources"] = resources
+                  # Run both injection patterns
+                  fragment = inject_resource_snippets(fragment, token)
+                  fragment = inject_inline_code(fragment, token)
 
                   return {
                       "requestId": event["requestId"],
                       "status":    "success",
                       "fragment":  fragment,
                   }
-
               except Exception as e:
                   print(f"ERROR: {e}")
                   return {
